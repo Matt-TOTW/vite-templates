@@ -40,13 +40,13 @@ export default function htmlTemplate({
   var props = JSON.stringify(model.component.props);
   oc = oc || {};
   oc.__${templateName}Template = oc.__${templateName}Template || { count: 0 };
-  oc.__${templateName}Template.elements = oc.__${templateName}Template.elements || {};
   oc.__data = oc.__data || {};
   oc.__data[model.id] = model.component.props;
   var count = oc.__${templateName}Template.count;
   var templateId = "${templateId}-" + count;
   oc.__${templateName}Template.count++;
   if (model.element) {
+    oc.__${templateName}Template.elements = oc.__${templateName}Template.elements || {};
     oc.__${templateName}Template.elements[templateId] = model.element;
   }
   var ssrCall = 'oc.components["${hash}"]({ id: "' + model.id + '", component: { props:' + props + ' } });';
@@ -54,14 +54,22 @@ export default function htmlTemplate({
   return '<div id="' + templateId + '" class="${templateId}">' + modelHTML + '</div>' +
     '${css ? '<style>' + escapeCSS(css) + '</style>' : ''}' +
     '<script>' +
-    '(function(targetElement){' +
-      'delete oc.__${templateName}Template.elements["' + templateId + '"];' +
-      'var targetNode = targetElement && targetElement.firstElementChild;' +
-      'if (!targetNode || targetNode.getAttribute("id") !== "' + templateId + '") {' +
+    '(function(templateState){' +
+      'var targetElement = templateState && templateState.elements && templateState.elements["' + templateId + '"];' +
+      'if (templateState && templateState.elements) delete templateState.elements["' + templateId + '"];' +
+      // processHtml replaces targetElement.innerHTML with this generated markup
+      // before reanimating the script, so the mount div is its first child.
+      'var targetNode;' +
+      'if (targetElement) {' +
+        'targetNode = targetElement.firstElementChild;' +
+        'if (!targetNode || targetNode.getAttribute("id") !== "' + templateId + '") {' +
+          'throw new Error("Unable to find scoped OC mount target: ' + templateId + '");' +
+        '}' +
+      '} else {' +
         'targetNode = document.getElementById("' + templateId + '");' +
-      '}' +
-      'if (!targetNode) {' +
-        'throw new Error("Unable to find OC mount target: ' + templateId + '");' +
+        'if (!targetNode) {' +
+          'throw new Error("Unable to find OC mount target: ' + templateId + '");' +
+        '}' +
       '}' +
       'oc = oc || {};' +
       'oc.cmd = oc.cmd || [];' +
@@ -70,14 +78,17 @@ export default function htmlTemplate({
         css ? "oc.events.fire(\\'oc:cssDidMount\\', \\'" + css + "\\');" : ''
       }' +
         'oc.requireSeries(' + JSON.stringify(externals) + ', function(){' +
-          'if (targetElement ? targetNode.parentElement !== targetElement : !targetNode.isConnected) return;' +
+          'if (targetElement ? targetNode.parentElement !== targetElement : !targetNode.isConnected) {' +
+            'console.warn("Skipping stale OC render for mount target: ' + templateId + '");' +
+            'return;' +
+          '}' +
           'targetNode.setAttribute("id","");' +
           (ssr ? ssrCall : '') +
           'oc.components["${hash}"]({ id: "' + model.id + '", component: { props: oc.__data["' + model.id + '"]} });' +
           'oc.${templateName}Components["${hash}"](oc.__data["' + model.id + '"], targetNode, ' + !!modelHTML  + ');' +
         '});' +
       '});' +
-    '})(oc.__${templateName}Template.elements["' + templateId + '"]);' +
+    '})(oc.__${templateName}Template);' +
   '</script>'
 }`;
 }

@@ -1,4 +1,16 @@
 import { expect, test } from '@playwright/test';
+import { createRequire } from 'node:module';
+import vm from 'node:vm';
+
+type HtmlTemplate =
+  typeof import('../../packages/oc-vite-compiler/src/lib/htmlTemplate').default;
+
+const require = createRequire(import.meta.url);
+const htmlTemplate = (
+  require('../../packages/oc-vite-compiler/dist/lib/htmlTemplate.js') as {
+    default: HtmlTemplate;
+  }
+).default;
 
 interface RenderedShadowComponent {
   component: HTMLElement;
@@ -36,9 +48,56 @@ type TestWindow = typeof window & {
   shadowDomTest: ShadowDomTestState;
 };
 
+test('queues server-rendered templates in a fresh browser context', () => {
+  const templateSource = htmlTemplate({
+    templateId: 'oc-reactRoot-ssr-test',
+    templateName: 'react',
+    externals: [],
+    css: '',
+    bundle: 'function() {}',
+    hash: 'ssr-test-hash',
+  });
+  const serverTemplate = vm.runInNewContext(`(${templateSource})`, {
+    oc: {},
+  }) as (model: {
+    id: string;
+    __html: string;
+    component: { props: Record<string, string> };
+  }) => string;
+  const html = serverTemplate({
+    id: 'ssr-test-id',
+    __html: '<p>Server-rendered content</p>',
+    component: {
+      props: {
+        _staticPath: '/static/',
+        _baseUrl: '/',
+        _componentName: 'ssr-test',
+        _componentVersion: '1.0.0',
+      },
+    },
+  });
+  const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
+  const browserOc = { cmd: [] as Array<(oc: unknown) => void> };
+
+  expect(script).toBeDefined();
+  expect(() =>
+    vm.runInNewContext(script!, {
+      oc: browserOc,
+      document: { getElementById: () => ({ isConnected: true }) },
+    })
+  ).not.toThrow();
+  expect(browserOc.cmd).toHaveLength(1);
+});
+
 test('renders React templates inside closed shadow roots', async ({ page }) => {
   const pageErrors: string[] = [];
+  const consoleWarnings: string[] = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'warning') {
+      consoleWarnings.push(message.text());
+    }
+  });
 
   await page.goto(
     '/base-component-react/1.0.0/~preview?name=Control&year=1991',
@@ -147,5 +206,8 @@ test('renders React templates inside closed shadow roots', async ({ page }) => {
   const finalState = await shadowState();
   expect(finalState.removedText).toBeUndefined();
   expect(finalState.firstCardBackground).toBe('rgb(255, 255, 255)');
+  expect(consoleWarnings).toContainEqual(
+    expect.stringContaining('Skipping stale OC render for mount target')
+  );
   expect(pageErrors).toEqual([]);
 });
