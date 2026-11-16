@@ -20,6 +20,8 @@ export default function htmlTemplate({
   bundle,
   hash,
 }: HtmlTemplate) {
+  // Retain model.element only until the generated script can capture its
+  // mount node. A document-level lookup cannot cross a shadow boundary.
   return `function(model){
   oc.${templateName}Components = oc.${templateName}Components || {};
   oc.${templateName}Components['${hash}'] = (${bundle});
@@ -38,28 +40,44 @@ export default function htmlTemplate({
   var props = JSON.stringify(model.component.props);
   oc = oc || {};
   oc.__${templateName}Template = oc.__${templateName}Template || { count: 0 };
+  oc.__${templateName}Template.elements = oc.__${templateName}Template.elements || {};
   oc.__data = oc.__data || {};
   oc.__data[model.id] = model.component.props;
   var count = oc.__${templateName}Template.count;
   var templateId = "${templateId}-" + count;
   oc.__${templateName}Template.count++;
+  if (model.element) {
+    oc.__${templateName}Template.elements[templateId] = model.element;
+  }
   var ssrCall = 'oc.components["${hash}"]({ id: "' + model.id + '", component: { props:' + props + ' } });';
 
   return '<div id="' + templateId + '" class="${templateId}">' + modelHTML + '</div>' +
     '${css ? '<style>' + escapeCSS(css) + '</style>' : ''}' +
     '<script>' +
-    'oc = oc || {};' +
-    'oc.cmd = oc.cmd || [];' +
-    'oc.cmd.push(function(oc){' +
-    '${css ? "oc.events.fire(\\'oc:cssDidMount\\', \\'" + css + "\\');" : ''}' +
-      'oc.requireSeries(' + JSON.stringify(externals) + ', function(){' +
-        'var targetNode = document.getElementById("' + templateId + '");' +
-        'targetNode.setAttribute("id","");' +
-        (ssr ? ssrCall : '') +
-        'oc.components["${hash}"]({ id: "' + model.id + '", component: { props: oc.__data["' + model.id + '"]} });' +
-        'oc.${templateName}Components["${hash}"](oc.__data["' + model.id + '"], targetNode, ' + !!modelHTML  + ');' +
+    '(function(targetElement){' +
+      'delete oc.__${templateName}Template.elements["' + templateId + '"];' +
+      'var targetNode = targetElement && targetElement.firstElementChild;' +
+      'if (!targetNode || targetNode.getAttribute("id") !== "' + templateId + '") {' +
+        'targetNode = document.getElementById("' + templateId + '");' +
+      '}' +
+      'if (!targetNode) {' +
+        'throw new Error("Unable to find OC mount target: ' + templateId + '");' +
+      '}' +
+      'oc = oc || {};' +
+      'oc.cmd = oc.cmd || [];' +
+      'oc.cmd.push(function(oc){' +
+      '${
+        css ? "oc.events.fire(\\'oc:cssDidMount\\', \\'" + css + "\\');" : ''
+      }' +
+        'oc.requireSeries(' + JSON.stringify(externals) + ', function(){' +
+          'if (targetElement ? targetNode.parentElement !== targetElement : !targetNode.isConnected) return;' +
+          'targetNode.setAttribute("id","");' +
+          (ssr ? ssrCall : '') +
+          'oc.components["${hash}"]({ id: "' + model.id + '", component: { props: oc.__data["' + model.id + '"]} });' +
+          'oc.${templateName}Components["${hash}"](oc.__data["' + model.id + '"], targetNode, ' + !!modelHTML  + ');' +
+        '});' +
       '});' +
-    '});' +
+    '})(oc.__${templateName}Template.elements["' + templateId + '"]);' +
   '</script>'
 }`;
 }
